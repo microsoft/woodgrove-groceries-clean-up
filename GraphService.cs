@@ -1,4 +1,6 @@
 using Azure.Identity;
+using Microsoft.ApplicationInsights;
+using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.Extensions.Logging;
 using Microsoft.Graph;
 using Microsoft.Graph.Models;
@@ -9,10 +11,12 @@ public class GraphService
 {
     private readonly GraphServiceClient _graphClient;
     private readonly ILogger _logger;
+    private TelemetryClient _telemetryClient;
 
-    public GraphService(ILogger logger)
+    public GraphService(ILogger logger, TelemetryClient tc)
     {
         _logger = logger;
+        _telemetryClient = tc;
 
         var scopes = new[] { "https://graph.microsoft.com/.default" };
 
@@ -66,9 +70,12 @@ public class GraphService
     // Example method to get a user by ID
     public async Task CleanUpDormantAccountsAsync()
     {
-        List<string> admins = await GetGroupMembersAsync();
-        List<string> usersToBeDeleted = await GetDormantAccounts(admins);
-        await DeleteUsersInBatchAsync(usersToBeDeleted);
+        using (_telemetryClient.StartOperation<RequestTelemetry>("Clean up operation"))
+        {
+            List<string> admins = await GetGroupMembersAsync();
+            List<string> usersToBeDeleted = await GetDormantAccounts(admins);
+            await DeleteUsersInBatchAsync(usersToBeDeleted);
+        }
     }
 
     private async Task DeleteUsersInBatchAsync(List<string> users)
@@ -86,6 +93,10 @@ public class GraphService
 
                 await batchRequestContent.AddBatchRequestStepAsync(request, Guid.NewGuid().ToString());
                 _logger.LogInformation($"The user {userId} will be deleted");
+
+                Dictionary<string, string> prop = new Dictionary<string, string>();
+                prop.Add("UserId", userId);
+                _telemetryClient.TrackEvent("User deleted", prop, null);
 
                 if (batchRequestContent.BatchRequestSteps.Count == 20)
                 {
@@ -176,6 +187,10 @@ public class GraphService
         }
 
         _logger.LogInformation($"The search for dormant accounts has been completed. {usersToDelete.Count} users will be deleted. {skippedUserCount} users will be skipped");
+        Dictionary<string, double> metrics = new Dictionary<string, double>();
+        metrics.Add("Delete", usersToDelete.Count);
+        metrics.Add("Skip", skippedUserCount);
+        _telemetryClient.TrackEvent("Search for dormant accounts has been completed", null, metrics);
         return usersToDelete;
     }
 
