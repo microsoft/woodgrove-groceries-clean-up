@@ -86,8 +86,10 @@ public class GraphService
             var batchRequestContent = new BatchRequestContentCollection(_graphClient);
 
             // Add delete requests to the batch
-            foreach (var userId in users)
+            for (int i = 0; i < users.Count; i++)
             {
+                string userId = users[i];
+
                 // Build the DELETE request for each user
                 var request = _graphClient.Users[userId].ToDeleteRequestInformation();
 
@@ -98,7 +100,7 @@ public class GraphService
                 prop.Add("UserId", userId);
                 _telemetryClient.TrackEvent("User deleted", prop, null);
 
-                if (batchRequestContent.BatchRequestSteps.Count == 20)
+                if (batchRequestContent.BatchRequestSteps.Count == 20 || i == (users.Count - 1))
                 {
                     try
                     {
@@ -190,7 +192,7 @@ public class GraphService
         Dictionary<string, double> metrics = new Dictionary<string, double>();
         metrics.Add("Delete", usersToDelete.Count);
         metrics.Add("Skip", skippedUserCount);
-        _telemetryClient.TrackEvent("Search for dormant accounts has been completed", null, metrics);
+        _telemetryClient.TrackEvent("Search completed", null, metrics);
         return usersToDelete;
     }
 
