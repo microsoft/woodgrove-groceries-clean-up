@@ -16,7 +16,8 @@ This Azure Function deletes dormant accounts. A dormant account is considered an
 
 Application settings in this function app contain configuration options that affect the function app. These settings are accessed as environment variables.
 
-- **AdminGroupID** - The security group ID containing admin accounts that must remain undeleted.
+- **AdminGroupID** - Exclude users in the **admin** security group ID.
+- **ExclusiveDemosGroupId** - Exclude users in the **exclusive demos** security group ID.
 - **TenantId** - The Microsoft Entra external ID tenant ID.
 - **ClientId** - The client ID.
 - **CertificateThumbprint** - The certificate thumbprint is used for the client credentials flow. Additionally, you should upload the certificate to the Azure Function app and add the `WEBSITE_LOAD_CERTIFICATES` environment setting with the certificate thumbprint.
