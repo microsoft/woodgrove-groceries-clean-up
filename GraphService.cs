@@ -9,7 +9,7 @@ using System.Security.Cryptography.X509Certificates;
 
 public class GraphService
 {
-    private readonly GraphServiceClient _graphClient;
+    private readonly GraphServiceClient? _graphClient;
     private readonly ILogger _logger;
     private TelemetryClient _telemetryClient;
 
@@ -21,9 +21,9 @@ public class GraphService
         var scopes = new[] { "https://graph.microsoft.com/.default" };
 
         // Values from app registration
-        string tenantId = Environment.GetEnvironmentVariable("TenantId");
-        string clientId = Environment.GetEnvironmentVariable("ClientId");
-        string certificateThumbprint = Environment.GetEnvironmentVariable("CertificateThumbprint");
+        string tenantId = Environment.GetEnvironmentVariable("TenantId") ?? throw new InvalidOperationException("TenantId environment variable is not set.");
+        string clientId = Environment.GetEnvironmentVariable("ClientId") ?? throw new InvalidOperationException("ClientId environment variable is not set.");
+        string certificateThumbprint = Environment.GetEnvironmentVariable("CertificateThumbprint") ?? throw new InvalidOperationException("CertificateThumbprint environment variable is not set.");
 
         // Load the certificate from the certificate store
         var certificate = LoadCertificateFromStore(certificateThumbprint);
@@ -63,7 +63,12 @@ public class GraphService
                 validOnly: false // Set to true if you only want valid certificates
             );
 
-            return certificates.Count > 0 ? certificates[0] : null;
+            if (certificates.Count > 0)
+            {
+                return certificates[0];
+            }
+
+            throw new InvalidOperationException("No certificate found with the specified thumbprint.");
         }
     }
 
@@ -72,14 +77,41 @@ public class GraphService
     {
         using (_telemetryClient.StartOperation<RequestTelemetry>("Clean up operation"))
         {
-            List<string> admins = await GetGroupMembersAsync();
-            List<string> usersToBeDeleted = await GetDormantAccounts(admins);
+
+            List<string> protectedAccounts = new List<string>();
+
+            // Get the admin security group ID from the environment variable
+            var adminGroupId = Environment.GetEnvironmentVariable("AdminGroupId");
+            if (!string.IsNullOrEmpty(adminGroupId))
+            {
+                protectedAccounts = await GetGroupMembersAsync(protectedAccounts, adminGroupId);
+            }
+
+            // Get the exclusive demos group ID from the environment variable
+            var exclusiveDemosGroupId = Environment.GetEnvironmentVariable("ExclusiveDemosGroupId");
+            if (!string.IsNullOrEmpty(exclusiveDemosGroupId))
+            {
+                protectedAccounts = await GetGroupMembersAsync(protectedAccounts, exclusiveDemosGroupId);
+            }
+
+            // Get the users to be deleted
+            List<string> usersToBeDeleted = await GetDormantAccounts(protectedAccounts);
+
+            // Delete users in batches 
             await DeleteUsersInBatchAsync(usersToBeDeleted);
         }
     }
 
     private async Task DeleteUsersInBatchAsync(List<string> users)
     {
+
+        // Check if the GraphServiceClient is initialized
+        if (_graphClient == null)
+        {
+            _logger.LogError("GraphServiceClient is not initialized.");
+            return;
+        }
+
         try
         {
             // Create the batch request content
@@ -129,11 +161,18 @@ public class GraphService
 
     }
 
-    public async Task<List<string>> GetDormantAccounts(List<string> admins)
+    public async Task<List<string>> GetDormantAccounts(List<string> protectedAccounts)
     {
         _logger.LogInformation("Search for all dormant accounts in the directory...");
         int skippedUserCount = 0;
         List<string> usersToDelete = new List<string>();
+
+        // Check if the GraphServiceClient is initialized
+        if (_graphClient == null)
+        {
+            _logger.LogError("GraphServiceClient is not initialized.");
+            return usersToDelete;
+        }
 
         // Format the cutoff date to ISO 8601 format
         string formattedDate = DateTime.UtcNow.AddDays(-30).ToString("yyyy-MM-ddTHH:mm:ssZ");
@@ -157,7 +196,7 @@ public class GraphService
                     (user) =>
                     {
                         // Delete only test users
-                        if (admins.Contains(user.Id!))
+                        if (protectedAccounts.Contains(user.Id!))
                         {
                             //_logger.LogInformation("**** Skipping " + user.Id);
                             skippedUserCount++;
@@ -196,24 +235,40 @@ public class GraphService
         return usersToDelete;
     }
 
-    public async Task<List<string>> GetGroupMembersAsync()
+    public async Task<List<string>> GetGroupMembersAsync(List<string> protectedAccounts, string groupID)
     {
-        string adminGroupId = Environment.GetEnvironmentVariable("AdminGroupId");
-        List<string> users = new List<string>();
+        // Check if the GraphServiceClient is initialized
+        if (_graphClient == null)
+        {
+            _logger.LogError("GraphServiceClient is not initialized.");
+            return protectedAccounts;
+        }
+
+        int membersCount = 0;
 
         try
         {
             // Get the members of the group
-            var members = await _graphClient.Groups[adminGroupId].Members
+            var members = await _graphClient.Groups[groupID].Members
                 .GetAsync(requestConfiguration =>
                     {
                         requestConfiguration.QueryParameters.Top = 999;
                         requestConfiguration.QueryParameters.Select = new string[] { "id, DisplayName" };
                     });
 
-            foreach (var user in members.Value)
+            // Check if the group has members and iterate through them
+            if (members != null && members.Value != null)
             {
-                users.Add(user.Id);
+                foreach (var user in members.Value)
+                {
+                    // Check if the user is already in the protected accounts list
+                    if (user.Id != null && !protectedAccounts.Contains(user.Id))
+                    {
+                        // Add the user ID to the protected accounts list
+                        protectedAccounts.Add(user.Id);
+                        membersCount++;
+                    }
+                }
             }
         }
         catch (ServiceException ex)
@@ -221,6 +276,8 @@ public class GraphService
             _logger.LogError($"Error getting group members: {ex.Message}");
         }
 
-        return users;
+        _logger.LogInformation($"The security group '{groupID}' has {membersCount} distinct protected accounts.");
+
+        return protectedAccounts;
     }
 }
